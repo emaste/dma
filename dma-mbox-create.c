@@ -39,6 +39,10 @@
  */
 
 #include <sys/param.h>
+#if defined(__FreeBSD__) && __FreeBSD_Version >= 1001511
+#include <sys/capsicum.h>
+#define HAVE_CAPSICUM 1
+#endif
 #include <sys/stat.h>
 
 #include <errno.h>
@@ -84,6 +88,9 @@ logfail(int exitcode, const char *fmt, ...)
 int
 main(int argc, char **argv)
 {
+#if USE_CAPSICUM
+	cap_rights_t rights;
+#endif
 	const char *user;
 	struct passwd *pw;
 	struct group *gr;
@@ -91,7 +98,7 @@ main(int argc, char **argv)
 	gid_t mail_gid;
 	int f, maildirfd;
 
-	openlog("dma-mbox-create", 0, LOG_MAIL);
+	openlog("dma-mbox-create", LOG_NDELAY, LOG_MAIL);
 
 	errno = 0;
 	gr = getgrnam(DMA_GROUP);
@@ -132,6 +139,24 @@ main(int argc, char **argv)
 	maildirfd = open(_PATH_MAILDIR, O_RDONLY);
 	if (maildirfd < 0)
 		logfail(EX_NOINPUT, "cannot open maildir %s", _PATH_MAILDIR);
+
+#if USE_CAPSICUM
+	/*
+	 * Cache NLS data, for strerror, for err(3), before entering capability
+	 * mode.
+	 */
+	(void)catopen("libc", NL_CAT_LOCALE);
+
+	/* Cache local time before entering Capsicum capability sandbox. */
+	tzset();
+
+	cap_rights_init(&rights, CAP_CREATE, CAP_FCHMOD, CAP_FCHOWN,
+	    CAP_LOOKUP, CAP_READ);
+	if (cap_rights_limit(maildirfd, &rights) < 0 && errno != ENOSYS)
+		err(EX_OSERR, "can't limit maildir fd rights");
+	if (cap_enter() < 0 && errno != ENOSYS)
+		err(EX_OSERR, "cap_enter");
+#endif
 
 	user_uid = pw->pw_uid;
 
